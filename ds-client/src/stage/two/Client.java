@@ -2,36 +2,41 @@ package stage.two;
 
 import java.io.*;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+
 
 public class Client {
     private Socket socket;
 
-    private char[] buf;
+    private BufferedReader br;
+
+    private DataOutputStream dos;
+
+    private byte[] buf;
 
     private List<Server> serverList;
-    private List<Integer> weights;
     private Job nextJob;
-    private int totalWeight;
 
     public Client(String host, int port) {
         // initialize socket connection
         try {
             socket = new Socket(host, port);
+            //socket.setTcpNoDelay(true);
+            br = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            dos = new DataOutputStream(socket.getOutputStream());
         } catch (IOException e) {
             e.printStackTrace();
         }
-
-        buf = new char[1024*1024];
     }
 
     public void authorize() {
         // basic authorization for client
         sendString("HELO");
-        readBuf();
+        readString();
         sendString("AUTH aaa");
-        readBuf();
+        readString();
         sendString("REDY");
 
         // get first job from ds-sim
@@ -40,40 +45,35 @@ public class Client {
 
     public void initServers() {
         // read and initialize information about servers
+        System.out.println("------INIT SERVER------");
         serverList = new ArrayList<>();
-        weights = new ArrayList<>();
-        sendString("GETS All");
-        readBuf();
+        sendString("GETS Capable " + nextJob.core + " " + nextJob.memory + " " + nextJob.disk);
+        String msg = readString();
+        if (msg.equals(".")) msg = readString();
+        int num = Integer.parseInt(msg.split(" ")[1]);
+        System.out.println(msg);
         sendString("OK");
         String info = readString();
         String[] serversInfo = info.split("\n");
 
         for (String s : serversInfo) {
-            Server isv = new Server(s);
-            serverList.add(isv);
-            if (weights.isEmpty()) {
-                weights.add(isv.cores);
-            } else {
-                weights.add(isv.cores + weights.get(weights.size()-1));
-            }
+            System.out.println(s);
+            serverList.add(new Server(s));
         }
-        totalWeight = weights.get(weights.size()-1);
+
         sendString("OK");
-        readBuf();
+        readString();
+        //assert ".".equals(msg);
     }
 
     public void schedule() {
         while (nextJob != null) {
-            Server nextServer = serverList.get(getServerIdxByWeight());
-            while (nextJob.core > nextServer.cores ||
-                    nextJob.memory > nextServer.memory ||
-                    nextJob.disk > nextServer.disk) {
-                nextServer = serverList.get(getServerIdxByWeight());
-            }
+            initServers();
+            Server nextServer = serverList.get(getServerIdx());
 
             sendString("SCHD " + nextJob.jobID + " " +
                     nextServer.serverName + " " + nextServer.serverId);
-            readBuf();
+            readString();
 
             while (true) {
                 sendString("REDY");
@@ -85,23 +85,23 @@ public class Client {
                 } else if ("NONE".equals(type)) {
                     nextJob = null;
                     break;
-                } else {
-                    //sendString("OK");
                 }
             }
         }
     }
 
-    private int getServerIdxByWeight() {
-        // generate a random number in [0, totalWeight]
-        int randNum = (int) (Math.random() * totalWeight);
-
-        // determine server index
-        int serverIdx = totalWeight-1;
-        for (int i = 0; i < weights.size(); i++) {
-            if (randNum < weights.get(i)) {
-                serverIdx = i;
-                break;
+    private int getServerIdx() {
+        initServers();
+        int serverIdx = -1;
+        int maxJobs = Integer.MAX_VALUE;
+        while (serverIdx < 0) {
+            initServers();
+            for (int i = 0; i < serverList.size(); i++) {
+                Server s = serverList.get(i);
+                if (s.waitingJobs + s.runningJobs < maxJobs) {
+                    maxJobs = s.waitingJobs + s.runningJobs;
+                    serverIdx = i;
+                }
             }
         }
 
@@ -109,29 +109,25 @@ public class Client {
     }
 
     private String readString() {
-        int offset = readBuf();
-        return new String(buf, 0, offset);
-    }
-
-    private int readBuf() {
-        BufferedReader reader;
-        try {
-            reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            int cnt = reader.read(buf);
-            return cnt;
-        } catch (IOException e) {
-            e.printStackTrace();
+        try{
+            StringBuilder sb = new StringBuilder();
+            while (sb.length() < 1) {
+                while (br.ready()) {
+                    sb.append((char) br.read());
+                }
+            }
+            return sb.toString();
         }
+        catch (Exception e){
 
-        return -1;
+        }
+        return "error found";
     }
 
     private void sendString(String msg) {
-        PrintWriter writer;
         try {
-            writer = new PrintWriter(new OutputStreamWriter(socket.getOutputStream()), true);
-            writer.write(msg);
-            writer.flush();
+            dos.write(msg.getBytes(StandardCharsets.UTF_8));
+            dos.flush();
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -141,7 +137,7 @@ public class Client {
         try {
             if (socket != null && !socket.isClosed()) {
                 sendString("QUIT");
-                readBuf();
+                readString();
                 //assert "QUIT".equals(new String(buf, 0, 4));
                 socket.close();
             }

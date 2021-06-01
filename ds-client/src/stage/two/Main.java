@@ -7,7 +7,6 @@ public class Main {
         Client c = new Client("127.0.0.1", 50000);
 
         c.authorize();
-        c.initServers();
         c.schedule();
 
         c.close();
